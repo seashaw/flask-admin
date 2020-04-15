@@ -36,7 +36,7 @@ def bool_formatter(view, value):
             Value to check
     """
     glyph = 'ok-circle' if value else 'minus-sign'
-    fa = 'check-circle' if value else 'minus-circle'
+    fa = 'check-circle' if value else 'circle-o'
     return Markup('<span class="fa fa-%s glyphicon glyphicon-%s icon-%s"></span>' % (fa, glyph, glyph))
 
 
@@ -84,6 +84,13 @@ EXPORT_FORMATTERS = {
     dict: dict_formatter,
 }
 
+DETAIL_FORMATTERS = {
+    type(None): empty_formatter,
+    list: list_formatter,
+    dict: dict_formatter,
+}
+
 if Enum is not None:
     BASE_FORMATTERS[Enum] = enum_formatter
     EXPORT_FORMATTERS[Enum] = enum_formatter
+    DETAIL_FORMATTERS[Enum] = enum_formatter

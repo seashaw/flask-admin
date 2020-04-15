@@ -1,7 +1,9 @@
 import warnings
+from enum import Enum, EnumMeta
 
 from wtforms import fields, validators
 from sqlalchemy import Boolean, Column
+from sqlalchemy.orm import ColumnProperty
 
 from flask_admin import form
 from flask_admin.model.form import (converts, ModelConverterBase,
@@ -9,14 +11,14 @@ from flask_admin.model.form import (converts, ModelConverterBase,
 from flask_admin.model.fields import AjaxSelectField, AjaxSelectMultipleField
 from flask_admin.model.helpers import prettify_name
 from flask_admin._backwards import get_property
-from flask_admin._compat import iteritems
+from flask_admin._compat import iteritems, text_type
 
-from .validators import Unique
+from .validators import Unique, valid_currency, valid_color, TimeZoneValidator
 from .fields import (QuerySelectField, QuerySelectMultipleField,
                      InlineModelFormList, InlineHstoreList, HstoreForm)
 from flask_admin.model.fields import InlineFormField
 from .tools import (has_multiple_pks, filter_foreign_columns,
-                    get_field_with_path)
+                    get_field_with_path, is_association_proxy, is_relationship)
 from .ajax import create_ajax_loader
 
 
@@ -86,10 +88,10 @@ class AdminModelConverter(ModelConverterBase):
         else:
             return QuerySelectField(**kwargs)
 
-    def _convert_relation(self, prop, kwargs):
+    def _convert_relation(self, name, prop, property_is_association_proxy, kwargs):
         # Check if relation is specified
         form_columns = getattr(self.view, 'form_columns', None)
-        if form_columns and prop.key not in form_columns:
+        if form_columns and name not in form_columns:
             return None
 
         remote_model = prop.mapper.class_
@@ -100,34 +102,31 @@ class AdminModelConverter(ModelConverterBase):
         if not column.foreign_keys:
             column = prop.local_remote_pairs[0][1]
 
-        kwargs['label'] = self._get_label(prop.key, kwargs)
-        kwargs['description'] = self._get_description(prop.key, kwargs)
+        kwargs['label'] = self._get_label(name, kwargs)
+        kwargs['description'] = self._get_description(name, kwargs)
 
         # determine optional/required, or respect existing
         requirement_options = (validators.Optional, validators.InputRequired)
-        if not any(isinstance(v, requirement_options) for v in kwargs['validators']):
-            if column.nullable or prop.direction.name != 'MANYTOONE':
+        requirement_validator_specified = any(isinstance(v, requirement_options) for v in kwargs['validators'])
+        if property_is_association_proxy or column.nullable or prop.direction.name != 'MANYTOONE':
+            kwargs['allow_blank'] = True
+            if not requirement_validator_specified:
                 kwargs['validators'].append(validators.Optional())
-            else:
+        else:
+            kwargs['allow_blank'] = False
+            if not requirement_validator_specified:
                 kwargs['validators'].append(validators.InputRequired())
-
-        # Contribute model-related parameters
-        if 'allow_blank' not in kwargs:
-            kwargs['allow_blank'] = column.nullable
 
         # Override field type if necessary
         override = self._get_field_override(prop.key)
         if override:
             return override(**kwargs)
 
-        if prop.direction.name == 'MANYTOONE' or not prop.uselist:
-            return self._model_select_field(prop, False, remote_model, **kwargs)
-        elif prop.direction.name == 'ONETOMANY':
-            return self._model_select_field(prop, True, remote_model, **kwargs)
-        elif prop.direction.name == 'MANYTOMANY':
-            return self._model_select_field(prop, True, remote_model, **kwargs)
+        multiple = (property_is_association_proxy or
+                    (prop.direction.name in ('ONETOMANY', 'MANYTOMANY') and prop.uselist))
+        return self._model_select_field(prop, multiple, remote_model, **kwargs)
 
-    def convert(self, model, mapper, prop, field_args, hidden_pk):
+    def convert(self, model, mapper, name, prop, field_args, hidden_pk):
         # Properly handle forced fields
         if isinstance(prop, FieldPlaceholder):
             return form.recreate_field(prop.field)
@@ -145,14 +144,21 @@ class AdminModelConverter(ModelConverterBase):
             kwargs['validators'] = list(kwargs['validators'])
 
         # Check if it is relation or property
-        if hasattr(prop, 'direction'):
-            return self._convert_relation(prop, kwargs)
+        if hasattr(prop, 'direction') or is_association_proxy(prop):
+            property_is_association_proxy = is_association_proxy(prop)
+            if property_is_association_proxy:
+                if not hasattr(prop.remote_attr, 'prop'):
+                    raise Exception('Association proxy referencing another association proxy is not supported.')
+                prop = prop.remote_attr.prop
+            return self._convert_relation(name, prop, property_is_association_proxy, kwargs)
         elif hasattr(prop, 'columns'):  # Ignore pk/fk
             # Check if more than one column mapped to the property
-            if len(prop.columns) > 1:
+            if len(prop.columns) > 1 and not isinstance(prop, ColumnProperty):
                 columns = filter_foreign_columns(model.__table__, prop.columns)
 
-                if len(columns) > 1:
+                if len(columns) == 0:
+                    return None
+                elif len(columns) > 1:
                     warnings.warn('Can not convert multiple-column properties (%s.%s)' % (model, prop.key))
                     return None
 
@@ -199,10 +205,10 @@ class AdminModelConverter(ModelConverterBase):
             optional_types = getattr(self.view, 'form_optional_types', (Boolean,))
 
             if (
-                not column.nullable
-                and not isinstance(column.type, optional_types)
-                and not column.default
-                and not column.server_default
+                not column.nullable and
+                not isinstance(column.type, optional_types) and
+                not column.default and
+                not column.server_default
             ):
                 kwargs['validators'].append(validators.InputRequired())
 
@@ -220,7 +226,7 @@ class AdminModelConverter(ModelConverterBase):
 
                 if value is not None:
                     if getattr(default, 'is_callable', False):
-                        value = lambda: default.arg(None)
+                        value = lambda: default.arg(None)  # noqa: E731
                     else:
                         if not getattr(default, 'is_scalar', True):
                             value = None
@@ -237,11 +243,10 @@ class AdminModelConverter(ModelConverterBase):
             if override:
                 return override(**kwargs)
 
-            # Check choices
+            # Check if a list of 'form_choices' are specified
             form_choices = getattr(self.view, 'form_choices', None)
-
             if mapper.class_ == self.view.model and form_choices:
-                choices = form_choices.get(column.key)
+                choices = form_choices.get(prop.key)
                 if choices:
                     return form.Select2Field(
                         choices=choices,
@@ -257,29 +262,15 @@ class AdminModelConverter(ModelConverterBase):
 
             return converter(model=model, mapper=mapper, prop=prop,
                              column=column, field_args=kwargs)
-
         return None
 
     @classmethod
     def _string_common(cls, column, field_args, **extra):
-        if isinstance(column.type.length, int) and column.type.length:
+        if hasattr(column.type, 'length') and isinstance(column.type.length, int) and column.type.length:
             field_args['validators'].append(validators.Length(max=column.type.length))
 
     @converts('String')  # includes VARCHAR, CHAR, and Unicode
     def conv_String(self, column, field_args, **extra):
-        if hasattr(column.type, 'enums'):
-            accepted_values = list(column.type.enums)
-
-            field_args['choices'] = [(f, f) for f in column.type.enums]
-
-            if column.nullable:
-                field_args['allow_blank'] = column.nullable
-                accepted_values.append(None)
-
-            field_args['validators'].append(validators.AnyOf(accepted_values))
-
-            return form.Select2Field(**field_args)
-
         if column.nullable:
             filters = field_args.get('filters', [])
             filters.append(lambda x: x or None)
@@ -288,7 +279,46 @@ class AdminModelConverter(ModelConverterBase):
         self._string_common(column=column, field_args=field_args, **extra)
         return fields.StringField(**field_args)
 
-    @converts('Text', 'LargeBinary', 'Binary')  # includes UnicodeText
+    @converts('sqlalchemy.sql.sqltypes.Enum')
+    def convert_enum(self, column, field_args, **extra):
+        available_choices = [(f, f) for f in column.type.enums]
+        accepted_values = [key for key, val in available_choices]
+
+        if column.nullable:
+            field_args['allow_blank'] = column.nullable
+            accepted_values.append(None)
+            filters = field_args.get('filters', [])
+            filters.append(lambda x: x or None)
+            field_args['filters'] = filters
+
+        field_args['choices'] = available_choices
+        field_args['validators'].append(validators.AnyOf(accepted_values))
+        field_args['coerce'] = lambda v: v.name if isinstance(v, Enum) else text_type(v)
+        return form.Select2Field(**field_args)
+
+    @converts('sqlalchemy_utils.types.choice.ChoiceType')
+    def convert_choice_type(self, column, field_args, **extra):
+        available_choices = []
+        # choices can either be specified as an enum, or as a list of tuples
+        if isinstance(column.type.choices, EnumMeta):
+            available_choices = [(f.value, f.name) for f in column.type.choices]
+        else:
+            available_choices = column.type.choices
+        accepted_values = [key for key, val in available_choices]
+
+        if column.nullable:
+            field_args['allow_blank'] = column.nullable
+            accepted_values.append(None)
+            filters = field_args.get('filters', [])
+            filters.append(lambda x: x or None)
+            field_args['filters'] = filters
+
+        field_args['choices'] = available_choices
+        field_args['validators'].append(validators.AnyOf(accepted_values))
+        field_args['coerce'] = choice_type_coerce_factory(column.type)
+        return form.Select2Field(**field_args)
+
+    @converts('Text', 'LargeBinary', 'Binary', 'CIText')  # includes UnicodeText
     def conv_Text(self, field_args, **extra):
         self._string_common(field_args=field_args, **extra)
         return fields.TextAreaField(**field_args)
@@ -309,6 +339,44 @@ class AdminModelConverter(ModelConverterBase):
     @converts('Time')
     def convert_time(self, field_args, **extra):
         return form.TimeField(**field_args)
+
+    @converts('sqlalchemy_utils.types.arrow.ArrowType')
+    def convert_arrow_time(self, field_args, **extra):
+        return form.DateTimeField(**field_args)
+
+    @converts('sqlalchemy_utils.types.email.EmailType')
+    def convert_email(self, field_args, **extra):
+        field_args['validators'].append(validators.Email())
+        return fields.StringField(**field_args)
+
+    @converts('sqlalchemy_utils.types.url.URLType')
+    def convert_url(self, field_args, **extra):
+        field_args['validators'].append(validators.URL())
+        field_args['filters'] = [avoid_empty_strings]  # don't accept empty strings, or whitespace
+        return fields.StringField(**field_args)
+
+    @converts('sqlalchemy_utils.types.ip_address.IPAddressType')
+    def convert_ip_address(self, field_args, **extra):
+        field_args['validators'].append(validators.IPAddress())
+        return fields.StringField(**field_args)
+
+    @converts('sqlalchemy_utils.types.color.ColorType')
+    def convert_color(self, field_args, **extra):
+        field_args['validators'].append(valid_color)
+        field_args['filters'] = [avoid_empty_strings]  # don't accept empty strings, or whitespace
+        return fields.StringField(**field_args)
+
+    @converts('sqlalchemy_utils.types.currency.CurrencyType')
+    def convert_currency(self, field_args, **extra):
+        field_args['validators'].append(valid_currency)
+        field_args['filters'] = [avoid_empty_strings]  # don't accept empty strings, or whitespace
+        return fields.StringField(**field_args)
+
+    @converts('sqlalchemy_utils.types.timezone.TimezoneType')
+    def convert_timezone(self, column, field_args, **extra):
+
+        field_args['validators'].append(TimeZoneValidator(coerce_function=column.type._coerce))
+        return fields.StringField(**field_args)
 
     @converts('Integer')  # includes BigInteger and SmallInteger
     def handle_integer_types(self, column, field_args, **extra):
@@ -335,13 +403,16 @@ class AdminModelConverter(ModelConverterBase):
         field_args['validators'].append(validators.MacAddress())
         return fields.StringField(**field_args)
 
-    @converts('sqlalchemy.dialects.postgresql.base.UUID')
+    @converts('sqlalchemy.dialects.postgresql.base.UUID',
+              'sqlalchemy_utils.types.uuid.UUIDType')
     def conv_PGUuid(self, field_args, **extra):
         field_args.setdefault('label', u'UUID')
         field_args['validators'].append(validators.UUID())
+        field_args['filters'] = [avoid_empty_strings]  # don't accept empty strings, or whitespace
         return fields.StringField(**field_args)
 
-    @converts('sqlalchemy.dialects.postgresql.base.ARRAY')
+    @converts('sqlalchemy.dialects.postgresql.base.ARRAY',
+              'sqlalchemy.sql.sqltypes.ARRAY')
     def conv_ARRAY(self, field_args, **extra):
         return form.Select2TagsField(save_as_list=True, **field_args)
 
@@ -353,6 +424,41 @@ class AdminModelConverter(ModelConverterBase):
     @converts('JSON')
     def convert_JSON(self, field_args, **extra):
         return form.JSONField(**field_args)
+
+
+def avoid_empty_strings(value):
+    """
+    Return None if the incoming value is an empty string or whitespace.
+    """
+    if value:
+        try:
+            value = value.strip()
+        except AttributeError:
+            # values are not always strings
+            pass
+    return value if value else None
+
+
+def choice_type_coerce_factory(type_):
+    """
+    Return a function to coerce a ChoiceType column, for use by Select2Field.
+    :param type_: ChoiceType object
+    """
+    from sqlalchemy_utils import Choice
+
+    choices = type_.choices
+    if isinstance(choices, type) and issubclass(choices, Enum):
+        key, choice_cls = 'value', choices
+    else:
+        key, choice_cls = 'code', Choice
+
+    def choice_coerce(value):
+        if value is None:
+            return None
+        if isinstance(value, choice_cls):
+            return getattr(value, key)
+        return type_.python_type(value)
+    return choice_coerce
 
 
 def _resolve_prop(prop):
@@ -414,16 +520,19 @@ def get_form(model, converter,
             if extra_fields and name in extra_fields:
                 return name, FieldPlaceholder(extra_fields[name])
 
-            column, path = get_field_with_path(model, name)
+            column, path = get_field_with_path(model, name, return_remote_proxy_attr=False)
 
-            if path and not hasattr(column.prop, 'direction'):
+            if path and not (is_relationship(column) or is_association_proxy(column)):
                 raise Exception("form column is located in another table and "
                                 "requires inline_models: {0}".format(name))
 
-            name = column.key
+            if is_association_proxy(column):
+                return name, column
+
+            relation_name = column.key
 
             if column is not None and hasattr(column, 'property'):
-                return name, column.property
+                return relation_name, column.property
 
             raise ValueError('Invalid model property name %s.%s' % (model, name))
 
@@ -440,7 +549,7 @@ def get_form(model, converter,
 
         prop = _resolve_prop(p)
 
-        field = converter.convert(model, mapper, prop, field_args.get(name), hidden_pk)
+        field = converter.convert(model, mapper, name, prop, field_args.get(name), hidden_pk)
         if field is not None:
             field_dict[name] = field
 
@@ -528,33 +637,20 @@ class InlineModelConverter(InlineModelConverterBase):
 
         return result
 
-    def contribute(self, model, form_class, inline_model):
+    def _calculate_mapping_key_pair(self, model, info):
         """
-            Generate form fields for inline forms and contribute them to
-            the `form_class`
+            Calculate mapping property key pair between `model` and inline model,
+                including the forward one for `model` and the reverse one for inline model.
+                Override the method to map your own inline models.
 
-            :param converter:
-                ModelConverterBase instance
-            :param session:
-                SQLAlchemy session
             :param model:
                 Model class
-            :param form_class:
-                Form to add properties to
-            :param inline_model:
-                Inline model. Can be one of:
-
-                 - ``tuple``, first value is related model instance,
-                 second is dictionary with options
-                 - ``InlineFormAdmin`` instance
-                 - Model class
-
+            :param info:
+                The InlineFormAdmin instance
             :return:
-                Form class
+                A tuple of forward property key and reverse property key
         """
-
         mapper = model._sa_class_manager.mapper
-        info = self.get_info(inline_model)
 
         # Find property from target model to current model
         # Use the base mapper to support inheritance
@@ -586,8 +682,39 @@ class InlineModelConverter(InlineModelConverterBase):
         else:
             raise Exception('Cannot find forward relation for model %s' % info.model)
 
+        return forward_prop.key, reverse_prop.key
+
+    def contribute(self, model, form_class, inline_model):
+        """
+            Generate form fields for inline forms and contribute them to
+            the `form_class`
+
+            :param converter:
+                ModelConverterBase instance
+            :param session:
+                SQLAlchemy session
+            :param model:
+                Model class
+            :param form_class:
+                Form to add properties to
+            :param inline_model:
+                Inline model. Can be one of:
+
+                 - ``tuple``, first value is related model instance,
+                 second is dictionary with options
+                 - ``InlineFormAdmin`` instance
+                 - Model class
+
+            :return:
+                Form class
+        """
+
+        info = self.get_info(inline_model)
+
+        forward_prop_key, reverse_prop_key = self._calculate_mapping_key_pair(model, info)
+
         # Remove reverse property from the list
-        ignore = [reverse_prop.key]
+        ignore = [reverse_prop_key]
 
         if info.form_excluded_columns:
             exclude = ignore + list(info.form_excluded_columns)
@@ -615,21 +742,21 @@ class InlineModelConverter(InlineModelConverterBase):
 
         kwargs = dict()
 
-        label = self.get_label(info, forward_prop.key)
+        label = self.get_label(info, forward_prop_key)
         if label:
             kwargs['label'] = label
 
         if self.view.form_args:
-            field_args = self.view.form_args.get(forward_prop.key, {})
+            field_args = self.view.form_args.get(forward_prop_key, {})
             kwargs.update(**field_args)
 
         # Contribute field
         setattr(form_class,
-                forward_prop.key,
+                forward_prop_key,
                 self.inline_field_list_type(child_form,
                                             self.session,
                                             info.model,
-                                            reverse_prop.key,
+                                            reverse_prop_key,
                                             info,
                                             **kwargs))
 

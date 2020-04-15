@@ -3,16 +3,21 @@ from nose.tools import eq_, ok_, raises, assert_true
 from wtforms import fields, validators
 
 from flask_admin import form
+from flask_admin.form.fields import Select2Field, DateTimeField
 from flask_admin._compat import as_unicode
 from flask_admin._compat import iteritems
 from flask_admin.contrib.sqla import ModelView, filters, tools
 from flask_babelex import Babel
 
 from sqlalchemy.ext.hybrid import hybrid_property
-
+from sqlalchemy import cast
+from sqlalchemy_utils import EmailType, ChoiceType, UUIDType, URLType, CurrencyType, ColorType, ArrowType, IPAddressType
 from . import setup
 
 from datetime import datetime, time, date
+import uuid
+import enum
+import arrow
 
 
 class CustomModelView(ModelView):
@@ -24,13 +29,20 @@ class CustomModelView(ModelView):
 
         super(CustomModelView, self).__init__(model, session, name, category,
                                               endpoint, url)
+    form_choices = {
+        'choice_field': [
+            ('choice-1', 'One'),
+            ('choice-2', 'Two')
+        ]
+    }
 
 
 def create_models(db):
     class Model1(db.Model):
         def __init__(self, test1=None, test2=None, test3=None, test4=None,
                      bool_field=False, date_field=None, time_field=None,
-                     datetime_field=None, enum_field=None):
+                     datetime_field=None, email_field=None,
+                     choice_field=None, enum_field=None):
             self.test1 = test1
             self.test2 = test2
             self.test3 = test3
@@ -39,7 +51,13 @@ def create_models(db):
             self.date_field = date_field
             self.time_field = time_field
             self.datetime_field = datetime_field
+            self.email_field = email_field
+            self.choice_field = choice_field
             self.enum_field = enum_field
+
+        class EnumChoices(enum.Enum):
+            first = 1
+            second = 2
 
         id = db.Column(db.Integer, primary_key=True)
         test1 = db.Column(db.String(20))
@@ -47,11 +65,23 @@ def create_models(db):
         test3 = db.Column(db.Text)
         test4 = db.Column(db.UnicodeText)
         bool_field = db.Column(db.Boolean)
-        enum_field = db.Column(db.Enum('model1_v1', 'model1_v2'), nullable=True)
-
         date_field = db.Column(db.Date)
         time_field = db.Column(db.Time)
         datetime_field = db.Column(db.DateTime)
+        email_field = db.Column(EmailType)
+        enum_field = db.Column(db.Enum('model1_v1', 'model1_v2'), nullable=True)
+        choice_field = db.Column(db.String, nullable=True)
+        sqla_utils_choice = db.Column(ChoiceType([
+            ('choice-1', u'First choice'),
+            ('choice-2', u'Second choice')
+        ]))
+        sqla_utils_enum = db.Column(ChoiceType(EnumChoices, impl=db.Integer()))
+        sqla_utils_arrow = db.Column(ArrowType, default=arrow.utcnow())
+        sqla_utils_uuid = db.Column(UUIDType(binary=False), default=uuid.uuid4)
+        sqla_utils_url = db.Column(URLType)
+        sqla_utils_ip_address = db.Column(IPAddressType)
+        sqla_utils_currency = db.Column(CurrencyType)
+        sqla_utils_color = db.Column(ColorType)
 
         def __unicode__(self):
             return self.test1
@@ -84,7 +114,7 @@ def create_models(db):
 
         # Relation
         model1_id = db.Column(db.Integer, db.ForeignKey(Model1.id))
-        model1 = db.relationship(Model1, backref='model2')
+        model1 = db.relationship(lambda: Model1, backref='model2')
 
     db.create_all()
 
@@ -95,7 +125,7 @@ def fill_db(db, Model1, Model2):
     model1_obj1 = Model1('test1_val_1', 'test2_val_1', bool_field=True)
     model1_obj2 = Model1('test1_val_2', 'test2_val_2', bool_field=False)
     model1_obj3 = Model1('test1_val_3', 'test2_val_3')
-    model1_obj4 = Model1('test1_val_4', 'test2_val_4')
+    model1_obj4 = Model1('test1_val_4', 'test2_val_4', email_field="test@test.com", choice_field="choice-1")
 
     model2_obj1 = Model2('test2_val_1', model1=model1_obj1, float_field=None)
     model2_obj2 = Model2('test2_val_2', model1=model1_obj2, float_field=None)
@@ -103,12 +133,12 @@ def fill_db(db, Model1, Model2):
     model2_obj4 = Model2('test2_val_4', int_field=9000, float_field=75.5)
     model2_obj5 = Model2('test2_val_5', int_field=6169453081680413441)
 
-    date_obj1 = Model1('date_obj1', date_field=date(2014,11,17))
-    date_obj2 = Model1('date_obj2', date_field=date(2013,10,16))
-    timeonly_obj1 = Model1('timeonly_obj1', time_field=time(11,10,9))
-    timeonly_obj2 = Model1('timeonly_obj2', time_field=time(10,9,8))
-    datetime_obj1 = Model1('datetime_obj1', datetime_field=datetime(2014,4,3,1,9,0))
-    datetime_obj2 = Model1('datetime_obj2', datetime_field=datetime(2013,3,2,0,8,0))
+    date_obj1 = Model1('date_obj1', date_field=date(2014, 11, 17))
+    date_obj2 = Model1('date_obj2', date_field=date(2013, 10, 16))
+    timeonly_obj1 = Model1('timeonly_obj1', time_field=time(11, 10, 9))
+    timeonly_obj2 = Model1('timeonly_obj2', time_field=time(10, 9, 8))
+    datetime_obj1 = Model1('datetime_obj1', datetime_field=datetime(2014, 4, 3, 1, 9, 0))
+    datetime_obj2 = Model1('datetime_obj2', datetime_field=datetime(2013, 3, 2, 0, 8, 0))
 
     enum_obj1 = Model1('enum_obj1', enum_field="model1_v1")
     enum_obj2 = Model1('enum_obj2', enum_field="model1_v2")
@@ -130,6 +160,7 @@ def test_model():
     Model1, Model2 = create_models(db)
 
     view = CustomModelView(Model1, db.session)
+
     admin.add_view(view)
 
     eq_(view.model, Model1)
@@ -153,32 +184,76 @@ def test_model():
     eq_(view._create_form_class.test2.field_class, fields.StringField)
     eq_(view._create_form_class.test3.field_class, fields.TextAreaField)
     eq_(view._create_form_class.test4.field_class, fields.TextAreaField)
+    eq_(view._create_form_class.email_field.field_class, fields.StringField)
+    eq_(view._create_form_class.choice_field.field_class, Select2Field)
+    eq_(view._create_form_class.enum_field.field_class, Select2Field)
+    eq_(view._create_form_class.sqla_utils_choice.field_class, Select2Field)
+    eq_(view._create_form_class.sqla_utils_enum.field_class, Select2Field)
+    eq_(view._create_form_class.sqla_utils_arrow.field_class, DateTimeField)
+    eq_(view._create_form_class.sqla_utils_uuid.field_class, fields.StringField)
+    eq_(view._create_form_class.sqla_utils_url.field_class, fields.StringField)
+    eq_(view._create_form_class.sqla_utils_ip_address.field_class, fields.StringField)
+    eq_(view._create_form_class.sqla_utils_currency.field_class, fields.StringField)
+    eq_(view._create_form_class.sqla_utils_color.field_class, fields.StringField)
 
     # Make some test clients
     client = app.test_client()
 
+    # check that we can retrieve a list view
     rv = client.get('/admin/model1/')
     eq_(rv.status_code, 200)
 
+    # check that we can retrieve a 'create' view
     rv = client.get('/admin/model1/new/')
     eq_(rv.status_code, 200)
 
-    rv = client.post('/admin/model1/new/',
-                     data=dict(test1='test1large',
-                               test2='test2',
-                               time_field=time(0,0,0)))
+    # create a new record
+    uuid_obj = uuid.uuid4()
+    rv = client.post(
+        '/admin/model1/new/',
+        data=dict(
+            test1='test1large',
+            test2='test2',
+            time_field=time(0, 0, 0),
+            email_field="Test@TEST.com",
+            choice_field="choice-1",
+            enum_field='model1_v1',
+            sqla_utils_choice="choice-1",
+            sqla_utils_enum=1,
+            sqla_utils_arrow='2018-10-27 14:17:00',
+            sqla_utils_uuid=str(uuid_obj),
+            sqla_utils_url="http://www.example.com",
+            sqla_utils_ip_address='127.0.0.1',
+            sqla_utils_currency='USD',
+            sqla_utils_color='#f0f0f0',
+        )
+    )
     eq_(rv.status_code, 302)
 
+    # check that the new record was persisted
     model = db.session.query(Model1).first()
     eq_(model.test1, u'test1large')
     eq_(model.test2, u'test2')
     eq_(model.test3, u'')
     eq_(model.test4, u'')
+    eq_(model.email_field, u'test@test.com')
+    eq_(model.choice_field, u'choice-1')
+    eq_(model.enum_field, u'model1_v1')
+    eq_(model.sqla_utils_choice, u'choice-1')
+    eq_(model.sqla_utils_enum.value, 1)
+    eq_(model.sqla_utils_arrow, arrow.get('2018-10-27 14:17:00'))
+    eq_(model.sqla_utils_uuid, uuid_obj)
+    eq_(model.sqla_utils_url, "http://www.example.com")
+    eq_(str(model.sqla_utils_ip_address), '127.0.0.1')
+    eq_(str(model.sqla_utils_currency), 'USD')
+    eq_(model.sqla_utils_color.hex, '#f0f0f0')
 
+    # check that the new record shows up on the list view
     rv = client.get('/admin/model1/')
     eq_(rv.status_code, 200)
     ok_(u'test1large' in rv.data.decode('utf-8'))
 
+    # check that we can retrieve an edit view
     url = '/admin/model1/edit/?id=%s' % model.id
     rv = client.get(url)
     eq_(rv.status_code, 200)
@@ -186,16 +261,44 @@ def test_model():
     # verify that midnight does not show as blank
     ok_(u'00:00:00' in rv.data.decode('utf-8'))
 
+    # edit the record
+    new_uuid_obj = uuid.uuid4()
     rv = client.post(url,
-                     data=dict(test1='test1small', test2='test2large'))
+                     data=dict(test1='test1small',
+                               test2='test2large',
+                               email_field='Test2@TEST.com',
+                               choice_field='__None',
+                               enum_field='__None',
+                               sqla_utils_choice='__None',
+                               sqla_utils_enum='__None',
+                               sqla_utils_arrow='',
+                               sqla_utils_uuid=str(new_uuid_obj),
+                               sqla_utils_url='',
+                               sqla_utils_ip_address='',
+                               sqla_utils_currency='',
+                               sqla_utils_color='',
+                               ))
     eq_(rv.status_code, 302)
 
+    # check that the changes were persisted
     model = db.session.query(Model1).first()
     eq_(model.test1, 'test1small')
     eq_(model.test2, 'test2large')
     eq_(model.test3, '')
     eq_(model.test4, '')
+    eq_(model.email_field, u'test2@test.com')
+    eq_(model.choice_field, None)
+    eq_(model.enum_field, None)
+    eq_(model.sqla_utils_choice, None)
+    eq_(model.sqla_utils_enum, None)
+    eq_(model.sqla_utils_arrow, None)
+    eq_(model.sqla_utils_uuid, new_uuid_obj)
+    eq_(model.sqla_utils_url, None)
+    eq_(model.sqla_utils_ip_address, None)
+    eq_(model.sqla_utils_currency, None)
+    eq_(model.sqla_utils_color, None)
 
+    # check that the model can be deleted
     url = '/admin/model1/delete/?id=%s' % model.id
     rv = client.post(url)
     eq_(rv.status_code, 302)
@@ -279,13 +382,16 @@ def test_exclude_columns():
 
     view = CustomModelView(
         Model1, db.session,
-        column_exclude_list=['test2', 'test4', 'enum_field', 'date_field', 'time_field', 'datetime_field']
+        column_exclude_list=['test2', 'test4', 'enum_field', 'date_field', 'time_field', 'datetime_field',
+                             'sqla_utils_choice', 'sqla_utils_enum', 'sqla_utils_arrow', 'sqla_utils_uuid',
+                             'sqla_utils_url', 'sqla_utils_ip_address', 'sqla_utils_currency', 'sqla_utils_color']
     )
     admin.add_view(view)
 
     eq_(
         view._list_columns,
-        [('test1', 'Test1'), ('test3', 'Test3'), ('bool_field', 'Bool Field')]
+        [('test1', 'Test1'), ('test3', 'Test3'), ('bool_field', 'Bool Field'),
+         ('email_field', 'Email Field'), ('choice_field', 'Choice Field')]
     )
 
     client = app.test_client()
@@ -330,6 +436,47 @@ def test_column_searchable_list():
     ok_('model2-test' in data)
 
 
+def test_extra_args_search():
+    app, db, admin = setup()
+
+    Model1, Model2 = create_models(db)
+
+    view1 = CustomModelView(Model1, db.session,
+                            column_searchable_list=['test1', ])
+
+    admin.add_view(view1)
+
+    db.session.add(Model2('model1-test', ))
+    db.session.commit()
+
+    client = app.test_client()
+
+    # check that extra args in the url are propagated as hidden fields in the search form
+    rv = client.get('/admin/model1/?search=model1&foo=bar')
+    data = rv.data.decode('utf-8')
+    ok_('<input type="hidden" name="foo" value="bar">' in data)
+
+
+def test_extra_args_filter():
+    app, db, admin = setup()
+
+    Model1, Model2 = create_models(db)
+
+    view2 = CustomModelView(Model2, db.session,
+                            column_filters=['int_field', ])
+    admin.add_view(view2)
+
+    db.session.add(Model2('model2-test', 5000))
+    db.session.commit()
+
+    client = app.test_client()
+
+    # check that extra args in the url are propagated as hidden fields in the  form
+    rv = client.get('/admin/model2/?flt1_0=5000&foo=bar')
+    data = rv.data.decode('utf-8')
+    ok_('<input type="hidden" name="foo" value="bar">' in data)
+
+
 def test_complex_searchable_list():
     app, db, admin = setup()
 
@@ -356,7 +503,7 @@ def test_complex_searchable_list():
     ok_('model2-test2-val' not in data)
 
     view2 = CustomModelView(Model1, db.session,
-                           column_searchable_list=[Model2.string_field])
+                            column_searchable_list=[Model2.string_field])
     admin.add_view(view2)
 
     # test relation object - Model2.string_field
@@ -562,7 +709,8 @@ def test_column_filters():
 
     eq_(len(view._filters), 7)
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Test1']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Test1']],
         [
             (0, u'contains'),
             (1, u'not contains'),
@@ -571,13 +719,15 @@ def test_column_filters():
             (4, u'empty'),
             (5, u'in list'),
             (6, u'not in list'),
-        ])
+        ]
+    )
 
     # Test filter that references property
     view = CustomModelView(Model2, db.session,
                            column_filters=['model1'])
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test1']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test1']],
         [
             (0, u'contains'),
             (1, u'not contains'),
@@ -586,9 +736,11 @@ def test_column_filters():
             (4, u'empty'),
             (5, u'in list'),
             (6, u'not in list'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test2']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test2']],
         [
             (7, u'contains'),
             (8, u'not contains'),
@@ -597,9 +749,11 @@ def test_column_filters():
             (11, u'empty'),
             (12, u'in list'),
             (13, u'not in list'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test3']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test3']],
         [
             (14, u'contains'),
             (15, u'not contains'),
@@ -608,9 +762,11 @@ def test_column_filters():
             (18, u'empty'),
             (19, u'in list'),
             (20, u'not in list'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test4']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Test4']],
         [
             (21, u'contains'),
             (22, u'not contains'),
@@ -619,32 +775,126 @@ def test_column_filters():
             (25, u'empty'),
             (26, u'in list'),
             (27, u'not in list'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Bool Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Bool Field']],
         [
             (28, u'equals'),
             (29, u'not equal'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Enum Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Date Field']],
         [
             (30, u'equals'),
             (31, u'not equal'),
-            (32, u'empty'),
-            (33, u'in list'),
-            (34, u'not in list'),
-        ])
+            (32, u'greater than'),
+            (33, u'smaller than'),
+            (34, u'between'),
+            (35, u'not between'),
+            (36, u'empty'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Time Field']],
+        [
+            (37, u'equals'),
+            (38, u'not equal'),
+            (39, u'greater than'),
+            (40, u'smaller than'),
+            (41, u'between'),
+            (42, u'not between'),
+            (43, u'empty'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Datetime Field']],
+        [
+            (44, u'equals'),
+            (45, u'not equal'),
+            (46, u'greater than'),
+            (47, u'smaller than'),
+            (48, u'between'),
+            (49, u'not between'),
+            (50, u'empty'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Email Field']],
+        [
+            (51, u'contains'),
+            (52, u'not contains'),
+            (53, u'equals'),
+            (54, u'not equal'),
+            (55, u'empty'),
+            (56, u'in list'),
+            (57, u'not in list'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Enum Field']],
+        [
+            (58, u'equals'),
+            (59, u'not equal'),
+            (60, u'empty'),
+            (61, u'in list'),
+            (62, u'not in list'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Choice Field']],
+        [
+            (63, u'contains'),
+            (64, u'not contains'),
+            (65, u'equals'),
+            (66, u'not equal'),
+            (67, u'empty'),
+            (68, u'in list'),
+            (69, u'not in list'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Sqla Utils Choice']],
+        [
+            (70, u'equals'),
+            (71, u'not equal'),
+            (72, u'contains'),
+            (73, u'not contains'),
+            (74, u'empty'),
+        ]
+    )
+
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Sqla Utils Enum']],
+        [
+            (75, u'equals'),
+            (76, u'not equal'),
+            (77, u'contains'),
+            (78, u'not contains'),
+            (79, u'empty'),
+        ]
+    )
 
     # Test filter with a dot
     view = CustomModelView(Model2, db.session,
                            column_filters=['model1.bool_field'])
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Model1 / Bool Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'model1 / Model1 / Bool Field']],
         [
             (0, 'equals'),
             (1, 'not equal'),
-        ])
+        ]
+    )
 
     # Test column_labels on filters
     view = CustomModelView(Model2, db.session,
@@ -681,7 +931,8 @@ def test_column_filters():
                            column_filters=['test1'], endpoint='_strings')
     admin.add_view(view)
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Test1']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Test1']],
         [
             (0, 'contains'),
             (1, 'not contains'),
@@ -690,7 +941,8 @@ def test_column_filters():
             (4, 'empty'),
             (5, 'in list'),
             (6, 'not in list'),
-        ])
+        ]
+    )
 
     # string - equals
     rv = client.get('/admin/_strings/?flt0_0=test1_val_1')
@@ -759,7 +1011,8 @@ def test_column_filters():
                            column_filters=['int_field'])
     admin.add_view(view)
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Int Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Int Field']],
         [
             (0, 'equals'),
             (1, 'not equal'),
@@ -768,7 +1021,8 @@ def test_column_filters():
             (4, 'empty'),
             (5, 'in list'),
             (6, 'not in list'),
-        ])
+        ]
+    )
 
     # integer - equals
     rv = client.get('/admin/model2/?flt0_0=5000')
@@ -865,11 +1119,13 @@ def test_column_filters():
                            endpoint="_bools")
     admin.add_view(view)
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Bool Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Bool Field']],
         [
             (0, 'equals'),
             (1, 'not equal'),
-        ])
+        ]
+    )
 
     # boolean - equals - Yes
     rv = client.get('/admin/_bools/?flt0_0=1')
@@ -908,7 +1164,8 @@ def test_column_filters():
                            endpoint="_float")
     admin.add_view(view)
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Float Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Float Field']],
         [
             (0, 'equals'),
             (1, 'not equal'),
@@ -917,7 +1174,8 @@ def test_column_filters():
             (4, 'empty'),
             (5, 'in list'),
             (6, 'not in list'),
-        ])
+        ]
+    )
 
     # float - equals
     rv = client.get('/admin/_float/?flt0_0=25.9')
@@ -1037,7 +1295,8 @@ def test_column_filters():
                            endpoint="_datetime")
     admin.add_view(view)
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Date Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Date Field']],
         [
             (0, 'equals'),
             (1, 'not equal'),
@@ -1046,9 +1305,11 @@ def test_column_filters():
             (4, 'between'),
             (5, 'not between'),
             (6, 'empty'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Datetime Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Datetime Field']],
         [
             (7, 'equals'),
             (8, 'not equal'),
@@ -1057,9 +1318,11 @@ def test_column_filters():
             (11, 'between'),
             (12, 'not between'),
             (13, 'empty'),
-        ])
+        ]
+    )
 
-    eq_([(f['index'], f['operation']) for f in view._filter_groups[u'Time Field']],
+    eq_(
+        [(f['index'], f['operation']) for f in view._filter_groups[u'Time Field']],
         [
             (14, 'equals'),
             (15, 'not equal'),
@@ -1068,7 +1331,8 @@ def test_column_filters():
             (18, 'between'),
             (19, 'not between'),
             (20, 'empty'),
-        ])
+        ]
+    )
 
     # date - equals
     rv = client.get('/admin/_datetime/?flt0_0=2014-11-17')
@@ -1298,7 +1562,7 @@ def test_column_filters():
 
     # Test single custom filter on relation
     view = CustomModelView(Model2, db.session,
-                           column_filters = [
+                           column_filters=[
                                filters.FilterEqual(Model1.test1, "Test1")
                            ], endpoint='_relation_test')
     admin.add_view(view)
@@ -1308,6 +1572,20 @@ def test_column_filters():
 
     ok_('test1_val_1' in data)
     ok_('test1_val_2' not in data)
+
+
+def test_column_filters_sqla_obj():
+    app, db, admin = setup()
+
+    Model1, Model2 = create_models(db)
+
+    view = CustomModelView(
+        Model1, db.session,
+        column_filters=[Model1.test1]
+    )
+    admin.add_view(view)
+
+    eq_(len(view._filters), 7)
 
 
 def test_hybrid_property():
@@ -1323,6 +1601,14 @@ def test_hybrid_property():
         def number_of_pixels(self):
             return self.width * self.height
 
+        @hybrid_property
+        def number_of_pixels_str(self):
+            return str(self.number_of_pixels())
+
+        @number_of_pixels_str.expression
+        def number_of_pixels_str(cls):
+            return cast(cls.width * cls.height, db.String)
+
     db.create_all()
 
     db.session.add(Model1(id=1, name="test_row_1", width=25, height=25))
@@ -1334,8 +1620,9 @@ def test_hybrid_property():
     view = CustomModelView(
         Model1, db.session,
         column_default_sort='number_of_pixels',
-        column_filters = [filters.IntGreaterFilter(Model1.number_of_pixels,
-                                                   'Number of Pixels')]
+        column_filters=[filters.IntGreaterFilter(Model1.number_of_pixels,
+                                                 'Number of Pixels')],
+        column_searchable_list=['number_of_pixels_str', ]
     )
     admin.add_view(view)
 
@@ -1355,6 +1642,13 @@ def test_hybrid_property():
     eq_(len(data), 2)
     eq_(data[0].name, 'test_row_2')
     eq_(data[1].name, 'test_row_1')
+
+    # searching
+    rv = client.get('/admin/model1/?search=100')
+    eq_(rv.status_code, 200)
+    data = rv.data.decode('utf-8')
+    ok_('test_row_2' in data)
+    ok_('test_row_1' not in data)
 
 
 def test_url_args():
@@ -1458,9 +1752,20 @@ def test_form_columns():
         excluded_column = db.Column(db.String)
 
     class ChildModel(db.Model):
+        class EnumChoices(enum.Enum):
+            first = 1
+            second = 2
+
         id = db.Column(db.String, primary_key=True)
         model_id = db.Column(db.Integer, db.ForeignKey(Model.id))
         model = db.relationship(Model, backref='backref')
+        enum_field = db.Column(db.Enum('model1_v1', 'model1_v2'), nullable=True)
+        choice_field = db.Column(db.String, nullable=True)
+        sqla_utils_choice = db.Column(ChoiceType([
+            ('choice-1', u'First choice'),
+            ('choice-2', u'Second choice')
+        ]))
+        sqla_utils_enum = db.Column(ChoiceType(EnumChoices, impl=db.Integer()))
 
     db.create_all()
 
@@ -1477,10 +1782,20 @@ def test_form_columns():
     ok_('int_field' in form1._fields)
     ok_('text_field' in form1._fields)
     ok_('datetime_field' not in form1._fields)
-
     ok_('excluded_column' not in form2._fields)
 
+    # check that relation shows up as a query select
     ok_(type(form3.model).__name__ == 'QuerySelectField')
+
+    # check that select field is rendered if form_choices were specified
+    ok_(type(form3.choice_field).__name__ == 'Select2Field')
+
+    # check that select field is rendered for enum fields
+    ok_(type(form3.enum_field).__name__ == 'Select2Field')
+
+    # check that sqlalchemy_utils field types are handled appropriately
+    ok_(type(form3.sqla_utils_choice).__name__ == 'Select2Field')
+    ok_(type(form3.sqla_utils_enum).__name__ == 'Select2Field')
 
     # test form_columns with model objects
     view4 = CustomModelView(Model, db.session, endpoint='view1',
@@ -1496,7 +1811,7 @@ def test_complex_form_columns():
 
     # test using a form column in another table
     view = CustomModelView(M2, db.session, form_columns=['model1.test1'])
-    form = view.create_form()
+    view.create_form()
 
 
 def test_form_args():
@@ -1632,7 +1947,7 @@ def test_default_sort():
     app, db, admin = setup()
     M1, _ = create_models(db)
 
-    db.session.add_all([M1('c'), M1('b'), M1('a')])
+    db.session.add_all([M1('c', 'x'), M1('b', 'x'), M1('a', 'y')])
     db.session.commit()
     eq_(M1.query.count(), 3)
 
@@ -1671,18 +1986,34 @@ def test_default_sort():
     eq_(data[1].test1, 'b')
     eq_(data[2].test1, 'c')
 
+    # test default sort with multiple columns
+    order = [('test2', False), ('test1', False)]
+    view4 = CustomModelView(M1, db.session, column_default_sort=order, endpoint='m1_4')
+    admin.add_view(view4)
+
+    _, data = view4.get_list(0, None, None, None, None)
+
+    eq_(len(data), 3)
+    eq_(data[0].test1, 'b')
+    eq_(data[1].test1, 'c')
+    eq_(data[2].test1, 'a')
+
 
 def test_complex_sort():
     app, db, admin = setup()
     M1, M2 = create_models(db)
 
-    m1 = M1('b')
+    m1 = M1(test1='c', test2='x')
     db.session.add(m1)
     db.session.add(M2('c', model1=m1))
 
-    m2 = M1('a')
+    m2 = M1(test1='b', test2='x')
     db.session.add(m2)
-    db.session.add(M2('c', model1=m2))
+    db.session.add(M2('b', model1=m2))
+
+    m3 = M1(test1='a', test2='y')
+    db.session.add(m3)
+    db.session.add(M2('a', model1=m3))
 
     db.session.commit()
 
@@ -1694,8 +2025,29 @@ def test_complex_sort():
 
     client = app.test_client()
 
-    rv = client.get('/admin/model2/?sort=1')
+    rv = client.get('/admin/model2/?sort=0')
     eq_(rv.status_code, 200)
+
+    _, data = view.get_list(0, 'model1.test1', False, None, None)
+
+    eq_(data[0].model1.test1, 'a')
+    eq_(data[1].model1.test1, 'b')
+    eq_(data[2].model1.test1, 'c')
+
+    # test sorting on multiple columns in related model
+    view2 = CustomModelView(M2, db.session,
+                            column_list=['string_field', 'model1'],
+                            column_sortable_list=[('model1', ('model1.test2', 'model1.test1'))], endpoint="m1_2")
+    admin.add_view(view2)
+
+    rv = client.get('/admin/m1_2/?sort=0')
+    eq_(rv.status_code, 200)
+
+    _, data = view2.get_list(0, 'model1', False, None, None)
+
+    eq_(data[0].model1.test1, 'b')
+    eq_(data[1].model1.test1, 'c')
+    eq_(data[2].model1.test1, 'a')
 
 
 @raises(Exception)
@@ -1802,13 +2154,14 @@ def test_extra_field_order():
     pos2 = data.find('Test1')
     ok_(pos2 > pos1)
 
+
 def test_modelview_localization():
     def test_locale(locale):
         try:
             app, db, admin = setup()
 
             app.config['BABEL_DEFAULT_LOCALE'] = locale
-            babel = Babel(app)
+            Babel(app)
 
             Model1, _ = create_models(db)
 
@@ -1833,6 +2186,28 @@ def test_modelview_localization():
     locales = ['en', 'cs', 'de', 'es', 'fa', 'fr', 'pt', 'ru', 'zh_CN', 'zh_TW']
     for locale in locales:
         test_locale(locale)
+
+
+def test_modelview_named_filter_localization():
+    app, db, admin = setup()
+
+    app.config['BABEL_DEFAULT_LOCALE'] = 'de'
+    Babel(app)
+
+    Model1, _ = create_models(db)
+
+    view = CustomModelView(
+        Model1, db.session,
+        named_filter_urls=True,
+        column_filters=['test1'],
+    )
+
+    filters = view.get_filters()
+    flt = filters[2]
+    with app.test_request_context():
+        flt_name = view.get_filter_arg(2, flt)
+    eq_('test1_equals', flt_name)
+
 
 def test_custom_form_base():
     app, db, admin = setup()
@@ -2143,6 +2518,34 @@ def test_multipath_joins():
     db.create_all()
 
     view = CustomModelView(Model2, db.session, filters=['first.test'])
+    admin.add_view(view)
+
+    client = app.test_client()
+
+    rv = client.get('/admin/model2/')
+    eq_(rv.status_code, 200)
+
+
+def test_different_bind_joins():
+    app, db, admin = setup()
+    app.config['SQLALCHEMY_BINDS'] = {
+        'other': 'sqlite:///'
+    }
+
+    class Model1(db.Model):
+        id = db.Column(db.Integer, primary_key=True)
+        val1 = db.Column(db.String(20))
+
+    class Model2(db.Model):
+        __bind_key__ = 'other'
+        id = db.Column(db.Integer, primary_key=True)
+        val1 = db.Column(db.String(20))
+        first_id = db.Column(db.Integer, db.ForeignKey(Model1.id))
+        first = db.relationship(Model1)
+
+    db.create_all()
+
+    view = CustomModelView(Model2, db.session)
     admin.add_view(view)
 
     client = app.test_client()

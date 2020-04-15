@@ -1,6 +1,7 @@
 # Fix for older setuptools
 import re
 import os
+import sys
 
 from setuptools import setup, find_packages
 
@@ -30,6 +31,22 @@ def grep(attrname):
     return strval
 
 
+extras_require = {
+    'aws': ['boto'],
+    'azure': ['azure-storage-blob']
+}
+
+
+install_requires = [
+    'Flask>=0.7',
+    'wtforms'
+]
+
+if sys.version_info[0:2] < (3, 4):
+    # required for python < 3.4
+    install_requires.append('enum34>=1.1.6')
+
+
 setup(
     name='Flask-Admin',
     version=grep('__version__'),
@@ -43,13 +60,11 @@ setup(
     include_package_data=True,
     zip_safe=False,
     platforms='any',
-    install_requires=[
-        'Flask>=0.7',
-        'wtforms'
-    ],
+    extras_require=extras_require,
+    install_requires=install_requires,
     tests_require=[
         'nose>=1.0',
-        'pillow==2.9.0',
+        'pillow>=3.3.2',
         'mongoengine',
         'pymongo',
         'wtf-peewee',
@@ -70,10 +85,10 @@ setup(
         'Programming Language :: Python',
         'Topic :: Software Development :: Libraries :: Python Modules',
         'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 3.3',
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
     ],
     test_suite='nose.collector'
 )
